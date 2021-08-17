@@ -1,0 +1,130 @@
+.. _mep-0003:
+
+========================
+MEP 3 -- Tensor 类型提升
+========================
+:编号: 3
+:标题: Tensor 类型提升
+:作者: 邓哲也
+:状态: 草稿
+:类型: 信息
+:创建时间: 2020-09-28
+
+简介
+----
+
+此 MEP 将用于解释 MegEngine 中 Tensor 类型提升（Type Promotion）规则以及设计思路。
+
+背景与动机
+----------
+
+MegEngine 中的 Tensor 存在着多种 :ref:`数据类型（dtype） <tensor-dtype>` , 且可以通过 :py:meth:`~.Tensor.astype` 进行显式类型转换。
+当单个的表达式中出现了不同数据类型的变量时，则会出现数据类型提升，即将变量从一种类型转换成另一种数据类型。
+
+>>> import megengine.functional as F
+>>> int_tensor = F.ones(1, dtype="int32")
+>>> float_tensor = F.ones(1, dtype="float32")
+>>> (int_tensor + float_tensor).dtype
+numpy.float32
+
+.. seealso::
+
+   * NumPy 提供了 :py:func:`numpy.result_type` 函数来计算返回类型，并在对应的 API Note 中进行了解释；
+   * PyTorch 也提供了 :py:func:`torch.result_type` 函数，并且在
+     `torch.dtype <https://pytorch.org/docs/stable/tensor_attributes.html#type-promotion-doc>`_ 中解释了提升规则。
+   * PyTorch 社区相关的讨论：`#9515 <https://github.com/pytorch/pytorch/issues/9515>`_ 
+
+
+设计方案对比
+------------
+
+NumPy 方案
+~~~~~~~~~~
+
+#. 首先检查 scalar 和 array 中各自最大的类型 （float > int > bool）
+#. 如果只有 scalar 或者 scalar 中最大的类型比 array 中最大的类型大，返回它们俩都能安全 cast 过去的最小类型
+#. 否则返回一个所有 array 都能安全 cast 过去的最小类型
+
+array(int32) + float32 → float64 # scalar 的类型更大，promote(float32, int32) → float64
+
+array(float32) + int32 → float32 # 只考虑 array 能 cast 过去的最小类型 → float32
+
+PyTorch 方案
+~~~~~~~~~~~~
+
+操作数的优先级：
+
+#. dimensioned tensor e.g. torch.ones(2)
+#. 0-dim tensor e.g. torch.tensor(1)
+#. scalar e.g. 1
+
+类型的优先级：
+
+#. float
+#. bool
+#. int
+
+优先级最高的元素参与 dtype promotion,
+除非低优先级的元素的类型优先级（e.g. float）超过了所有比他优先级高的元素的所有类型（e.g. int）
+
+例子
+~~~~
+
+1 表示 scalar / tensor(int8) 表示 0 维tensor / ones(int8) 表示 ≥1 维 tensor
+
+.. list-table:: 
+   :header-rows: 1
+
+   * -
+     - NumPy
+     - PyTorch
+   * - ones(int8) + 1 ->
+     - int8
+     - int8 # ones(int8) 参与 promote
+   * - tensor(int8) + 1 -> 
+     - int64 # 1 是 int64，返回 int64 和 int8 都能 cast 过去的类型，即 int 64
+     - int8 # tensor(int8) 参与 promote, 1 虽然是int64, 但是不参与 promote（操作数优先级低于 0 维tensor）
+   * - ones(int8) + tensor(1) -> 
+     - int8
+     - int8 # ones(int8) 参与 promote (虽然tensor(1) 是 int64，但是不参与promote)
+   * - tensor(int8) + tensor(1) -> 
+     - int64
+     - int64 # tensor(int8) 和 tensor(1) 共同参与 promote
+   * - tensor(int8) + 1.0 -> 
+     - float64 # 1.0 是 float64，返回 float64 和 int8 都能 cast 过去的类型，即 float 64
+     - float32 参与 promote，虽然它优先级低，但它的 float 优先级比 int8 高
+
+简单总结
+~~~~~~~~
+.. list-table:: 
+   :header-rows: 1
+
+   * -
+     - NumPy
+     - PyTorch
+   * - 对于 scalar
+     - 根据值的大小判断是uint8/int8/int16/int32/int64, float16/float32/float64.
+       如 scalar(50000) + uint8(array) → uint16
+     - 无视值，直接根据类型决定是 int64 或 float32.
+       如 scalar(50000) + uint8(tensor) → uint8 # overflow
+   * - 特点
+     - 尽可能不损失精度。如 float32 + int32 → float64
+     - 遵循 float > int > bool 的优先级，只保证最高优先级的类型不丢精度。
+       如 float32 + int32 → float32 
+
+实现方案
+--------
+
+在 Pytorch 的基础上修改。根据 float > int > bool 的优先级，只保证最高优先级的类型不丢精度。
+
+待讨论的点
+----------
+
+* 是否要 promote 出 int64 / float64 的结果
+  * 要：报错很不友好
+  * 不要：不知道会不会有问题（？）
+* 是否要考虑 scalar 的值
+  * 如果考虑：int → uint8/int8/int16/int32, float→ float16/float32
+  * 如果不考虑：int → int32, float→ float32 
+* 对于 scalar 和 tensor 同时参与运算的情况，是否区别对待他们的 dtype
+  * 我觉得可以全部转成 tensor

@@ -49,6 +49,9 @@ Meta 与流程类 MEPs
    * - P
      - :ref:`mep-0001`
      - The MegEngine Open Source Team
+   * - I
+     - :ref:`mep-0003`
+     - 邓哲也
 
 临时状态 MEPs
 ~~~~~~~~~~~~~
